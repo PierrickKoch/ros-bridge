@@ -72,6 +72,10 @@ class Camera(Sensor):
         else:
             self._build_camera_info()
 
+        self.quat_swap = transforms3d.quaternions.mat2quat(numpy.matrix(
+            [[0, 0, 1],
+             [-1, 0, 0],
+             [0, -1, 0]]))
         self.camera_info_publisher = node.new_publisher(CameraInfo, self.get_topic_prefix() +
                                                         '/camera_info', qos_profile=10)
         self.camera_image_publisher = node.new_publisher(Image, self.get_topic_prefix() +
@@ -137,11 +141,7 @@ class Camera(Sensor):
         rotation = tf_msg.transform.rotation
 
         quat = [rotation.w, rotation.x, rotation.y, rotation.z]
-        quat_swap = transforms3d.quaternions.mat2quat(numpy.matrix(
-            [[0, 0, 1],
-             [-1, 0, 0],
-             [0, -1, 0]]))
-        quat = transforms3d.quaternions.qmult(quat, quat_swap)
+        quat = transforms3d.quaternions.qmult(quat, self.quat_swap)
 
         tf_msg.transform.rotation.w = quat[0]
         tf_msg.transform.rotation.x = quat[1]
@@ -212,26 +212,26 @@ class RgbCamera(Camera):
                                         carla_actor=carla_actor,
                                         synchronous_mode=synchronous_mode)
 
+        self.img_msg = Image()
+        self.img_msg.encoding = 'bgra8'
         self.listen()
 
-    def get_carla_image_data_array(self, carla_image):
+    def get_ros_image(self, carla_camera_data):
         """
-        Function (override) to convert the carla image to a numpy data array
-        as input for the cv_bridge.cv2_to_imgmsg() function
-
-        The RGB camera provides a 4-channel int8 color format (bgra).
-
-        :param carla_image: carla image object
-        :type carla_image: carla.Image
-        :return tuple (numpy data array containing the image information, encoding)
-        :rtype tuple(numpy.ndarray, string)
+        Function to transform the received carla camera data into a ROS image message
         """
-
-        carla_image_data_array = numpy.ndarray(
-            shape=(carla_image.height, carla_image.width, 4),
-            dtype=numpy.uint8, buffer=carla_image.raw_data)
-
-        return carla_image_data_array, 'bgra8'
+        if ((carla_camera_data.height != self._camera_info.height) or
+                (carla_camera_data.width != self._camera_info.width)):
+            self.node.logerr(
+                "Camera{} received image not matching configuration".format(self.get_prefix()))
+        # the camera data is in respect to the camera's own frame
+        self.img_msg.header = self.get_msg_header(timestamp=carla_camera_data.timestamp)
+        self.img_msg.width = carla_camera_data.width
+        self.img_msg.height = carla_camera_data.height
+        # skip numpy + cv_bridge : gain approx 20% speedup
+        self.img_msg.data = bytes(carla_camera_data.raw_data)
+        self.img_msg.step = len(self.img_msg.data) // self.img_msg.height
+        return self.img_msg
 
 
 class DepthCamera(Camera):
